@@ -1,0 +1,74 @@
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+# compiled output
+client/dist
+client/tmp
+client/out-tsc
+
+# dependencies
+client/node_modules
+
+# IDEs and editors
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+client/.sass-cache
+client/connect.lock
+client/coverage
+client/libpeerconnection.log
+npm-debug.log
+testem.log
+
+# e2e
+client/e2e/*.js
+client/e2e/*.map
+
+# System Files
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# User-specific files (MonoDevelop/Xamarin Studio)
+*.userprefs
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+[Xx]64/
+[Xx]86/
+bld/
+[Bb]in/
+[Oo]bj/
+
+packages
+
+logs
+output_files
+tests_output
+output
+.vs
+core.hbm.xml
+build_info
+
+_vars.custom.sh
+backend/.idea/
