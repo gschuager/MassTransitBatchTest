@@ -7,7 +7,6 @@ using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Events;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
@@ -20,7 +19,7 @@ namespace MassTransitTest
     class Program
     {
         public const int MessagesCount = 10000;
-        
+
         static async Task Main(string[] args)
         {
             Log.Logger = new LoggerConfiguration()
@@ -125,7 +124,7 @@ namespace MassTransitTest
         private readonly Stopwatch stopwatch;
 
         private int consumed;
-        
+
         public MessageCounter()
         {
             messageCount = Program.MessagesCount;
@@ -133,7 +132,7 @@ namespace MassTransitTest
         }
 
         public Task<TimeSpan> Completed => completed.Task;
-        
+
         public void Consumed(int n)
         {
             var c = Interlocked.Add(ref consumed, n);
@@ -155,8 +154,6 @@ namespace MassTransitTest
     {
         private readonly ILogger<DoWorkConsumer> logger;
         private readonly MessageCounter<DoWork> counter;
-        
-        private static readonly HashSet<Guid?> alreadyReceivedMessages = new HashSet<Guid?>();
 
         public DoWorkConsumer(ILogger<DoWorkConsumer> logger, MessageCounter<DoWork> counter)
         {
@@ -166,22 +163,11 @@ namespace MassTransitTest
 
         public async Task Consume(ConsumeContext<Batch<DoWork>> context)
         {
-            lock (alreadyReceivedMessages)
+            if (DuplicatesDetector<DoWork>.AlreadyReceived(logger, context.Message))
             {
-                foreach (var msg in context.Message)
-                {
-                    if (alreadyReceivedMessages.Contains(msg.MessageId))
-                    {
-                        logger.LogError("DoWork DUPLICATED MESSAGE");
-                        return;
-                    }
-                    else
-                    {
-                        alreadyReceivedMessages.Add(msg.MessageId);
-                    }
-                }
+                return;
             }
-            
+
             foreach (var msg in context.Message)
             {
                 await context.Publish(new WorkDone());
@@ -193,7 +179,7 @@ namespace MassTransitTest
             // logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
 
             // await Task.Delay(50);
-            
+
             counter.Consumed(context.Message.Length);
         }
     }
@@ -207,8 +193,6 @@ namespace MassTransitTest
         private readonly ILogger<WorkDoneConsumer> logger;
         private readonly MessageCounter<WorkDone> counter;
 
-        private static readonly HashSet<Guid?> alreadyReceivedMessages = new HashSet<Guid?>();
-
         public WorkDoneConsumer(ILogger<WorkDoneConsumer> logger, MessageCounter<WorkDone> counter)
         {
             this.logger = logger;
@@ -217,20 +201,9 @@ namespace MassTransitTest
 
         public async Task Consume(ConsumeContext<Batch<WorkDone>> context)
         {
-            lock (alreadyReceivedMessages)
+            if (DuplicatesDetector<WorkDone>.AlreadyReceived(logger, context.Message))
             {
-                foreach (var msg in context.Message)
-                {
-                    if (alreadyReceivedMessages.Contains(msg.MessageId))
-                    {
-                        logger.LogError("WorkDone DUPLICATED MESSAGE");
-                        return;
-                    }
-                    else
-                    {
-                        alreadyReceivedMessages.Add(msg.MessageId);
-                    }
-                }
+                return;
             }
 
             // logger.LogInformation("Consumed {0} WorkDone", context.Message.Length);
