@@ -51,8 +51,8 @@ namespace MassTransitTest
 
                 await Task.WhenAll(counter1.Completed, counter2.Completed);
 
-                logger.LogInformation("DoWork messages rate {0} msg/s", await counter1.GetRate());
-                logger.LogInformation("WorkDone messages rate {0} msg/s", await counter2.GetRate());
+                logger.LogInformation("DoWork messages rate {0} msg/s - concurrent batch consumers {1}", await counter1.GetRate(), ConcurrencyCounter<DoWorkConsumer>.MaxConsumerCount);
+                logger.LogInformation("WorkDone messages rate {0} msg/s - concurrent batch consumers {1}", await counter2.GetRate(), ConcurrencyCounter<WorkDoneConsumer>.MaxConsumerCount);
             }
             finally
             {
@@ -161,6 +161,8 @@ namespace MassTransitTest
 
         public async Task Consume(ConsumeContext<Batch<DoWork>> context)
         {
+            using var _ = ConcurrencyCounter<DoWorkConsumer>.Measure();
+            
             if (DuplicatesDetector<DoWork>.AlreadyReceived(logger, context.Message))
             {
                 return;
@@ -199,6 +201,8 @@ namespace MassTransitTest
 
         public async Task Consume(ConsumeContext<Batch<WorkDone>> context)
         {
+            using var _ = ConcurrencyCounter<WorkDoneConsumer>.Measure();
+
             if (DuplicatesDetector<WorkDone>.AlreadyReceived(logger, context.Message))
             {
                 return;
