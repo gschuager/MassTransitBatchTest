@@ -16,7 +16,7 @@ namespace MassTransitTest
             {
                 if (batch.All(m => alreadyReceived.Contains(m.MessageId)))
                 {
-                    logger.LogError("Entire batch of {0} duplicated", typeof(T).Name);
+                    logger.LogError("Entire batch of {0} duplicated - completion mode was {1}", typeof(T).Name, batch.Mode);
                     return true;
                 }
 
