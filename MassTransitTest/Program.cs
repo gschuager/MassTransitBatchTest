@@ -1,43 +1,59 @@
-﻿using MassTransit;
+﻿using GreenPipes;
+using MassTransit;
 using MassTransit.Context;
+using MassTransit.Definition;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Events;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
+using GreenPipes.Util;
 
 namespace MassTransitTest
 {
     class Program
     {
+        public const int MessagesCount = 10000;
+        
         static async Task Main(string[] args)
         {
             Log.Logger = new LoggerConfiguration()
-              .MinimumLevel.Debug()
-              .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
-              .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
-              .Enrich.FromLogContext()
-              .WriteTo.Console()
-              .CreateLogger();
+                .MinimumLevel.Debug()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+                .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
+                .Enrich.FromLogContext()
+                .WriteTo.Console()
+                .CreateLogger();
 
             var provider = ConfigureServiceProvider();
             LogContext.ConfigureCurrentLogContext(provider.GetRequiredService<ILoggerFactory>());
 
+            var logger = provider.GetRequiredService<ILogger<Program>>();
             var bus = provider.GetRequiredService<IBusControl>();
+            var counter1 = provider.GetRequiredService<MessageCounter<DoWork>>();
+            var counter2 = provider.GetRequiredService<MessageCounter<WorkDone>>();
 
             try
             {
                 await bus.StartAsync();
 
-                var messages = Enumerable.Range(0, 15000).Select(x => new DoWork());
-                foreach (var msg in messages)
-                {
-                    await bus.Send(msg);
-                }
+                var messages = Enumerable.Range(0, MessagesCount).Select(_ => new DoWork());
+                await bus.SendConcurrently(messages, 100);
+                // foreach (var msg in messages)
+                // {
+                //     await bus.Send(msg);
+                // }
+
+                await Task.WhenAll(counter1.Completed, counter2.Completed);
+
+                logger.LogInformation("DoWork messages rate {0} msg/s", await counter1.GetRate());
+                logger.LogInformation("WorkDone messages rate {0} msg/s", await counter2.GetRate());
 
                 Console.ReadKey();
             }
@@ -51,24 +67,47 @@ namespace MassTransitTest
         {
             var services = new ServiceCollection();
 
+            services.AddSingleton(typeof(MessageCounter<>));
+
             services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddSerilog());
 
-            EndpointConvention.Map<DoWork>(new Uri("queue:test-queue"));
+            EndpointConvention.Map<DoWork>(new Uri("queue:do-work"));
 
             services.AddMassTransit(x =>
             {
+                x.SetEndpointNameFormatter(KebabCaseEndpointNameFormatter.Instance);
+
                 x.AddConsumers(Assembly.GetExecutingAssembly());
 
-                x.AddBus(provider => Bus.Factory.CreateUsingInMemory(cfg =>
+                x.AddBus(context => Bus.Factory.CreateUsingRabbitMq(cfg =>
                 {
-                    cfg.ReceiveEndpoint("test-queue", e =>
+                    cfg.Host("localhost");
+
+                    cfg.UseInMemoryOutbox();
+
+                    cfg.ReceiveEndpoint("do-work", e =>
                     {
+                        e.PrefetchCount = 5000;
+                        e.PurgeOnStartup = true;
                         e.Batch<DoWork>(b =>
                         {
                             b.MessageLimit = 100;
                             b.TimeLimit = TimeSpan.FromMilliseconds(50);
 
-                            b.Consumer<DoWorkConsumer, DoWork>(provider);
+                            b.Consumer<DoWorkConsumer, DoWork>(context);
+                        });
+                    });
+
+                    cfg.ReceiveEndpoint("work-done", e =>
+                    {
+                        e.PrefetchCount = 5000;
+                        e.PurgeOnStartup = true;
+                        e.Batch<WorkDone>(b =>
+                        {
+                            b.MessageLimit = 100;
+                            b.TimeLimit = TimeSpan.FromMilliseconds(50);
+
+                            b.Consumer<WorkDoneConsumer, WorkDone>(context);
                         });
                     });
                 }));
@@ -79,6 +118,35 @@ namespace MassTransitTest
         }
     }
 
+    public class MessageCounter<T>
+    {
+        private readonly int messageCount;
+        private readonly TaskCompletionSource<TimeSpan> completed = TaskUtil.GetTask<TimeSpan>();
+        private readonly Stopwatch stopwatch;
+
+        private int consumed;
+        
+        public MessageCounter()
+        {
+            messageCount = Program.MessagesCount;
+            stopwatch = Stopwatch.StartNew();
+        }
+
+        public Task<TimeSpan> Completed => completed.Task;
+        
+        public void Consumed(int n)
+        {
+            var c = Interlocked.Add(ref consumed, n);
+
+            if (c == messageCount)
+            {
+                completed.TrySetResult(stopwatch.Elapsed);
+            }
+        }
+
+        public async Task<double> GetRate() => consumed / (await Completed).TotalSeconds;
+    }
+
     public class DoWork
     {
     }
@@ -86,12 +154,14 @@ namespace MassTransitTest
     public class DoWorkConsumer : IConsumer<Batch<DoWork>>
     {
         private readonly ILogger<DoWorkConsumer> logger;
-
+        private readonly MessageCounter<DoWork> counter;
+        
         private static readonly HashSet<Guid?> alreadyReceivedMessages = new HashSet<Guid?>();
 
-        public DoWorkConsumer(ILogger<DoWorkConsumer> logger)
+        public DoWorkConsumer(ILogger<DoWorkConsumer> logger, MessageCounter<DoWork> counter)
         {
             this.logger = logger;
+            this.counter = counter;
         }
 
         public async Task Consume(ConsumeContext<Batch<DoWork>> context)
@@ -102,7 +172,58 @@ namespace MassTransitTest
                 {
                     if (alreadyReceivedMessages.Contains(msg.MessageId))
                     {
-                        logger.LogError("DUPLICATED MESSAGE");
+                        logger.LogError("DoWork DUPLICATED MESSAGE");
+                        return;
+                    }
+                    else
+                    {
+                        alreadyReceivedMessages.Add(msg.MessageId);
+                    }
+                }
+            }
+            
+            foreach (var msg in context.Message)
+            {
+                await context.Publish(new WorkDone());
+            }
+
+            // var actions = context.Message.Select(msg => (Func<Task>) (() => context.Publish(new WorkDone())));
+            // await actions.ExecuteSequentially();
+
+            // logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
+
+            // await Task.Delay(50);
+            
+            counter.Consumed(context.Message.Length);
+        }
+    }
+
+    public class WorkDone
+    {
+    }
+
+    public class WorkDoneConsumer : IConsumer<Batch<WorkDone>>
+    {
+        private readonly ILogger<WorkDoneConsumer> logger;
+        private readonly MessageCounter<WorkDone> counter;
+
+        private static readonly HashSet<Guid?> alreadyReceivedMessages = new HashSet<Guid?>();
+
+        public WorkDoneConsumer(ILogger<WorkDoneConsumer> logger, MessageCounter<WorkDone> counter)
+        {
+            this.logger = logger;
+            this.counter = counter;
+        }
+
+        public async Task Consume(ConsumeContext<Batch<WorkDone>> context)
+        {
+            lock (alreadyReceivedMessages)
+            {
+                foreach (var msg in context.Message)
+                {
+                    if (alreadyReceivedMessages.Contains(msg.MessageId))
+                    {
+                        logger.LogError("WorkDone DUPLICATED MESSAGE");
                         return;
                     }
                     else
@@ -112,13 +233,11 @@ namespace MassTransitTest
                 }
             }
 
-            for (int i = 0; i < 50000000; i++)
-            {
-                if (i % 5000000 == 0)
-                {
-                    await Task.Yield();
-                }
-            }
+            // logger.LogInformation("Consumed {0} WorkDone", context.Message.Length);
+
+            // await Task.Delay(50);
+
+            counter.Consumed(context.Message.Length);
         }
     }
 }
