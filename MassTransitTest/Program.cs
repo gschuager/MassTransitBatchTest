@@ -53,8 +53,6 @@ namespace MassTransitTest
 
                 logger.LogInformation("DoWork messages rate {0} msg/s", await counter1.GetRate());
                 logger.LogInformation("WorkDone messages rate {0} msg/s", await counter2.GetRate());
-
-                Console.ReadKey();
             }
             finally
             {
