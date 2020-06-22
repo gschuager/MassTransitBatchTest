@@ -13,6 +13,8 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using GreenPipes.Util;
+using MassTransit.ConsumeConfigurators;
+using MassTransit.RabbitMqTransport;
 
 namespace MassTransitTest
 {
@@ -27,7 +29,8 @@ namespace MassTransitTest
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
                 .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
                 .Enrich.FromLogContext()
-                .WriteTo.Console()
+                .WriteTo.Console(outputTemplate:
+                    "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {messageId} {Message:lj}{NewLine}{Exception}")
                 .CreateLogger();
 
             var provider = ConfigureServiceProvider();
@@ -80,33 +83,10 @@ namespace MassTransitTest
                 {
                     cfg.Host("localhost");
 
+                    cfg.UseLogging();
                     cfg.UseInMemoryOutbox();
 
-                    cfg.ReceiveEndpoint("do-work", e =>
-                    {
-                        e.PrefetchCount = 5000;
-                        e.PurgeOnStartup = true;
-                        e.Batch<DoWork>(b =>
-                        {
-                            b.MessageLimit = 100;
-                            b.TimeLimit = TimeSpan.FromMilliseconds(50);
-
-                            b.Consumer<DoWorkConsumer, DoWork>(context);
-                        });
-                    });
-
-                    cfg.ReceiveEndpoint("work-done", e =>
-                    {
-                        e.PrefetchCount = 5000;
-                        e.PurgeOnStartup = true;
-                        e.Batch<WorkDone>(b =>
-                        {
-                            b.MessageLimit = 100;
-                            b.TimeLimit = TimeSpan.FromMilliseconds(50);
-
-                            b.Consumer<WorkDoneConsumer, WorkDone>(context);
-                        });
-                    });
+                    cfg.ConfigureEndpoints(context);
                 }));
             });
 
@@ -148,6 +128,20 @@ namespace MassTransitTest
     {
     }
 
+    public class DoWorkConsumerDefinition : ConsumerDefinition<DoWorkConsumer>
+    {
+        protected override void ConfigureConsumer(IReceiveEndpointConfigurator endpointConfigurator, IConsumerConfigurator<DoWorkConsumer> consumerConfigurator)
+        {
+            ((IRabbitMqReceiveEndpointConfigurator)endpointConfigurator).PrefetchCount = 5000;
+            consumerConfigurator.Options<BatchOptions>(b =>
+            {
+                b.MessageLimit = 100;
+                b.TimeLimit = TimeSpan.FromMilliseconds(50);
+                b.ConcurrencyLimit = 1;
+            });
+        }
+    }
+    
     public class DoWorkConsumer : IConsumer<Batch<DoWork>>
     {
         private readonly ILogger<DoWorkConsumer> logger;
@@ -173,10 +167,14 @@ namespace MassTransitTest
                 await context.Publish(new WorkDone());
             }
 
+            // var messages = context.Message.Select(x => new WorkDone()).ToArray();
+            // await context.SendConcurrently(messages, 100);
+
+            
             // var actions = context.Message.Select(msg => (Func<Task>) (() => context.Publish(new WorkDone())));
             // await actions.ExecuteSequentially();
 
-            // logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
+            logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
 
             // await Task.Delay(50);
 
@@ -188,6 +186,20 @@ namespace MassTransitTest
     {
     }
 
+    public class WorkDoneConsumerDefinition : ConsumerDefinition<WorkDoneConsumer>
+    {
+        protected override void ConfigureConsumer(IReceiveEndpointConfigurator endpointConfigurator, IConsumerConfigurator<WorkDoneConsumer> consumerConfigurator)
+        {
+            ((IRabbitMqReceiveEndpointConfigurator)endpointConfigurator).PrefetchCount = 5000;
+            consumerConfigurator.Options<BatchOptions>(b =>
+            {
+                b.MessageLimit = 100;
+                b.TimeLimit = TimeSpan.FromMilliseconds(50);
+                b.ConcurrencyLimit = 30;
+            });
+        }
+    }
+    
     public class WorkDoneConsumer : IConsumer<Batch<WorkDone>>
     {
         private readonly ILogger<WorkDoneConsumer> logger;
@@ -208,7 +220,7 @@ namespace MassTransitTest
                 return;
             }
 
-            // logger.LogInformation("Consumed {0} WorkDone", context.Message.Length);
+            logger.LogInformation("Consumed {0} WorkDone", context.Message.Length);
 
             // await Task.Delay(50);
 
