@@ -1,23 +1,22 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using GreenPipes;
 using GreenPipes.Internals.Extensions;
 using GreenPipes.Specifications;
 using MassTransit;
 using MassTransit.ConsumeConfigurators;
-using MassTransit.Context;
+using MassTransit.Internals.Extensions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using InterfaceExtensions = MassTransit.Internals.Extensions.InterfaceExtensions;
 
 namespace MassTransitTest
 {
-    public class LoggingFilter<TConsumer> : IFilter<ConsumerConsumeContext<TConsumer>>
+    public class LoggingFilter2<TConsumer> : IFilter<ConsumerConsumeContext<TConsumer>>
         where TConsumer : class
     {
-        private readonly ILogContext logContext;
-
-        public LoggingFilter()
-        {
-            logContext = LogContext.CreateLogContext(typeof(LoggingFilter<>).FullName);
-        }
-        
         public void Probe(ProbeContext context)
         {
             context.CreateFilterScope("logging");
@@ -25,17 +24,50 @@ namespace MassTransitTest
 
         public async Task Send(ConsumerConsumeContext<TConsumer> context, IPipe<ConsumerConsumeContext<TConsumer>> next)
         {
-            var scope = logContext.BeginScope();
-            try
+            var messageType = context.GetType().GetClosingArgument(typeof(ConsumeContext<>));
+
+            int? length = null;
+            BatchCompletionMode? mode = null;
+            if (InterfaceExtensions.ClosesType(messageType, typeof(Batch<>)))
             {
-                scope?.Add("messageId", context.MessageId);
-                logContext.Info?.Log("┌── Begin {0}", TypeCache<TConsumer>.ShortName);
-                await next.Send(context);
+                var consumeContextType = typeof(ConsumeContext<>).MakeGenericType(messageType);
+
+                var message = consumeContextType.GetProperty("Message")!.GetValue(context);
+
+                length = (int)messageType.GetProperty(nameof(Batch<object>.Length))!.GetValue(message)!;
+                mode = (BatchCompletionMode)messageType.GetProperty(nameof(Batch<object>.Mode))!.GetValue(message)!;
             }
-            finally
+
+            var serviceProvider = context.GetPayload<IServiceProvider>();
+            var logger = serviceProvider.GetRequiredService<ILogger<LoggingFilter2<TConsumer>>>();
+
+            using (logger.BeginScope(new Dictionary<string, object> { {"messageId", context.MessageId} }))
             {
-                logContext.Info?.Log("└── Finished {0}", TypeCache<TConsumer>.ShortName);
-                scope?.Dispose();
+                if (length == null)
+                {
+                    logger.LogInformation("┌── {0}", TypeCache<TConsumer>.ShortName);
+                }
+                else
+                {
+                    logger.LogInformation("╔══ {0} - {1} - {2} messages", TypeCache<TConsumer>.ShortName, mode, length);
+                }
+                
+                var sw = Stopwatch.StartNew();
+                try
+                {
+                    await next.Send(context);
+                }
+                finally
+                {
+                    if (length == null)
+                    {
+                        logger.LogInformation("└── {0} [{1} ms]", TypeCache<TConsumer>.ShortName, sw.ElapsedMilliseconds);
+                    }
+                    else
+                    {
+                        logger.LogInformation("╚══ {0} [{1} ms]", TypeCache<TConsumer>.ShortName, sw.ElapsedMilliseconds);
+                    }
+                }
             }
         }
     }
@@ -46,7 +78,7 @@ namespace MassTransitTest
         public void ConsumerConfigured<TConsumer>(IConsumerConfigurator<TConsumer> configurator) where TConsumer : class
         {
             configurator.AddPipeSpecification(
-                new FilterPipeSpecification<ConsumerConsumeContext<TConsumer>>(new LoggingFilter<TConsumer>()));
+                new FilterPipeSpecification<ConsumerConsumeContext<TConsumer>>(new LoggingFilter2<TConsumer>()));
         }
 
         public void ConsumerMessageConfigured<TConsumer, TMessage>(
