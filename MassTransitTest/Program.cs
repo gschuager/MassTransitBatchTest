@@ -19,7 +19,7 @@ namespace MassTransitTest
 {
     class Program
     {
-        public const int MessagesCount = 2000;
+        public const int MessagesCount = 2;
 
         static async Task Main(string[] args)
         {
@@ -27,7 +27,7 @@ namespace MassTransitTest
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Debug()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
-                .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
+                // .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
                 .Enrich.FromLogContext()
                 .WriteTo.Console(outputTemplate:
                     "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {messageId} {Message:lj}{NewLine}{Exception}")
@@ -40,6 +40,9 @@ namespace MassTransitTest
             LogContext.ConfigureCurrentLogContext(provider.GetRequiredService<ILoggerFactory>());
 
             var bus = provider.GetRequiredService<IBusControl>();
+            
+            var result = bus.GetProbeResult();
+            await File.WriteAllTextAsync("bus.json", result.ToJsonString());
 
             try
             {
@@ -81,14 +84,17 @@ namespace MassTransitTest
 
         private static void ConfigureBus(IBusRegistrationContext context, IRabbitMqBusFactoryConfigurator cfg)
         {
-            cfg.Host("localhost");
+            cfg.Host("localhost", "/", x =>
+            {
+                x.Username("guest");
+                x.Password("guest");
+            });
 
-            cfg.PrefetchCount = 500;
+            cfg.PrefetchCount = 10;
 
-            cfg.UseMessageRetry(r => { r.Immediate(2); });
+            cfg.UseMessageRetry(r => { r.Immediate(1); });
             cfg.UseLogging();
-            cfg.UseInMemoryOutbox();
-
+            
             cfg.ConfigureEndpoints(context);
         }
     }
@@ -102,58 +108,30 @@ namespace MassTransitTest
         protected override void ConfigureConsumer(IReceiveEndpointConfigurator endpointConfigurator,
             IConsumerConfigurator<DoWorkConsumer> consumerConfigurator)
         {
-            ((IRabbitMqReceiveEndpointConfigurator) endpointConfigurator).PrefetchCount = 5000;
+            ((IRabbitMqReceiveEndpointConfigurator) endpointConfigurator).PrefetchCount = 100;
             consumerConfigurator.Options<BatchOptions>(b =>
             {
-                b.MessageLimit = 100;
-                b.TimeLimit = TimeSpan.FromMilliseconds(100);
-                b.ConcurrencyLimit = 2;
+                b.MessageLimit = 2;
+                // b.TimeLimit = TimeSpan.FromMilliseconds(100);
+                // b.ConcurrencyLimit = 1;
             });
         }
     }
 
     public class DoWorkConsumer : IConsumer<Batch<DoWork>>
     {
-        private static int n;
-
         private readonly ILogger<DoWorkConsumer> logger;
-        private readonly MessageCounter<DoWork> counter;
 
-        public DoWorkConsumer(ILogger<DoWorkConsumer> logger, MessageCounter<DoWork> counter)
+        public DoWorkConsumer(ILogger<DoWorkConsumer> logger)
         {
             this.logger = logger;
-            this.counter = counter;
         }
 
         public async Task Consume(ConsumeContext<Batch<DoWork>> context)
         {
-            using var _ = ConcurrencyCounter<DoWorkConsumer>.Measure();
+            logger.LogInformation("Consumed {0} DoWork: {1}", context.Message.Length, string.Join(",", context.Message.Select(x => x.MessageId).ToArray()));
 
-            logger.LogDebug("Messages ids in batch {1}",
-                string.Join(",", context.Message.Select(x => x.MessageId).ToArray()));
-
-            if (DuplicatesDetector<DoWork>.AlreadyReceived(logger, context.Message))
-            {
-                return;
-            }
-
-            logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
-
-            await Task.Delay(500);
-
-            context.AddExplicitOutboxAction(async () =>
-            {
-                // this is to simulate time consumed by sending outgoing messages
-                // and a broker timeout in one of the batches
-                
-                await Task.Delay(500);
-                if (Interlocked.Increment(ref n) == 3)
-                {
-                    throw new Exception("Simulating broker timeout");
-                }
-            });
-
-            counter.Consumed(context.Message.Length);
+            throw new Exception("error");
         }
     }
 }
