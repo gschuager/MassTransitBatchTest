@@ -19,7 +19,7 @@ namespace MassTransitTest
 {
     class Program
     {
-        public const int MessagesCount = 2000;
+        public const int MessagesCount = 100000;
 
         static async Task Main(string[] args)
         {
@@ -27,7 +27,7 @@ namespace MassTransitTest
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Debug()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
-                .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
+                // .MinimumLevel.Override("MassTransit", LogEventLevel.Information)
                 .Enrich.FromLogContext()
                 .WriteTo.Console(outputTemplate:
                     "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {messageId} {Message:lj}{NewLine}{Exception}")
@@ -46,7 +46,7 @@ namespace MassTransitTest
                 await bus.StartAsync();
 
                 var messages = Enumerable.Range(0, MessagesCount).Select(_ => new DoWork());
-                await bus.SendConcurrently(messages, 100);
+                await bus.SendConcurrently(messages);
 
                 Console.ReadKey();
             }
@@ -60,7 +60,7 @@ namespace MassTransitTest
         {
             var services = new ServiceCollection();
 
-            services.AddSingleton(typeof(MessageCounter<>));
+            services.AddSingleton(typeof(MessageCounter2));
 
             services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddSerilog());
 
@@ -87,7 +87,7 @@ namespace MassTransitTest
 
             cfg.UseMessageRetry(r => { r.Immediate(2); });
             cfg.UseLogging();
-            cfg.UseInMemoryOutbox();
+            cfg.UseInMemoryOutbox(x => x.ConcurrentMessageDelivery = true);
 
             cfg.ConfigureEndpoints(context);
         }
@@ -95,6 +95,11 @@ namespace MassTransitTest
 
     public class DoWork
     {
+    }
+    
+    public class WorkDone
+    {
+        public Guid TaskId { get; set; }
     }
 
     public class DoWorkConsumerDefinition : ConsumerDefinition<DoWorkConsumer>
@@ -107,7 +112,7 @@ namespace MassTransitTest
             {
                 b.MessageLimit = 100;
                 b.TimeLimit = TimeSpan.FromMilliseconds(100);
-                b.ConcurrencyLimit = 2;
+                b.ConcurrencyLimit = 10;
             });
         }
     }
@@ -117,9 +122,9 @@ namespace MassTransitTest
         private static int n;
 
         private readonly ILogger<DoWorkConsumer> logger;
-        private readonly MessageCounter<DoWork> counter;
+        private readonly MessageCounter2 counter;
 
-        public DoWorkConsumer(ILogger<DoWorkConsumer> logger, MessageCounter<DoWork> counter)
+        public DoWorkConsumer(ILogger<DoWorkConsumer> logger, MessageCounter2 counter)
         {
             this.logger = logger;
             this.counter = counter;
@@ -127,33 +132,47 @@ namespace MassTransitTest
 
         public async Task Consume(ConsumeContext<Batch<DoWork>> context)
         {
-            using var _ = ConcurrencyCounter<DoWorkConsumer>.Measure();
-
-            logger.LogDebug("Messages ids in batch {1}",
-                string.Join(",", context.Message.Select(x => x.MessageId).ToArray()));
-
-            if (DuplicatesDetector<DoWork>.AlreadyReceived(logger, context.Message))
+            foreach (var msg in context.Message)
             {
-                return;
+                await context.Publish(new WorkDone { TaskId = msg.MessageId!.Value });
             }
 
-            logger.LogInformation("Consumed {0} DoWork", context.Message.Length);
-
-            await Task.Delay(500);
-
-            context.AddExplicitOutboxAction(async () =>
+            counter.Consumed(nameof(DoWork), context.Message.Select(x => x.MessageId!.Value).ToArray());
+        }
+    }
+    
+    
+    public class WorkDoneConsumerDefinition : ConsumerDefinition<WorkDoneConsumer>
+    {
+        protected override void ConfigureConsumer(IReceiveEndpointConfigurator endpointConfigurator,
+            IConsumerConfigurator<WorkDoneConsumer> consumerConfigurator)
+        {
+            ((IRabbitMqReceiveEndpointConfigurator) endpointConfigurator).PrefetchCount = 5000;
+            consumerConfigurator.Options<BatchOptions>(b =>
             {
-                // this is to simulate time consumed by sending outgoing messages
-                // and a broker timeout in one of the batches
-                
-                await Task.Delay(500);
-                if (Interlocked.Increment(ref n) == 3)
-                {
-                    throw new Exception("Simulating broker timeout");
-                }
+                b.MessageLimit = 100;
+                b.TimeLimit = TimeSpan.FromMilliseconds(100);
+                b.ConcurrencyLimit = 10;
             });
+        }
+    }
 
-            counter.Consumed(context.Message.Length);
+    public class WorkDoneConsumer : IConsumer<Batch<WorkDone>>
+    {
+        private static int n;
+
+        private readonly ILogger<WorkDoneConsumer> logger;
+        private readonly MessageCounter2 counter;
+
+        public WorkDoneConsumer(ILogger<WorkDoneConsumer> logger, MessageCounter2 counter)
+        {
+            this.logger = logger;
+            this.counter = counter;
+        }
+
+        public async Task Consume(ConsumeContext<Batch<WorkDone>> context)
+        {
+            counter.Consumed(nameof(WorkDone), context.Message.Select(x => x.Message.TaskId).ToArray());
         }
     }
 }
