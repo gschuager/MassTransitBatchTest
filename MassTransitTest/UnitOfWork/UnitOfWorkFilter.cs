@@ -6,14 +6,13 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace MassTransitTest.UnitOfWork
 {
-    public class UnitOfWorkFilter<TUnitOfWork, TContext, TConsumer> : IFilter<TContext>
-        where TConsumer : class
-        where TContext : class, ConsumerConsumeContext<TConsumer>
+    public class UnitOfWorkFilter<TUnitOfWork, TContext> : IFilter<TContext>
+        where TContext : class, ConsumeContext
     {
-        private readonly Func<TUnitOfWork, Task> complete;
+        private readonly Func<ConsumeContext, TUnitOfWork, Task> complete;
         private readonly Func<TUnitOfWork, Task> onError;
 
-        public UnitOfWorkFilter(Func<TUnitOfWork, Task> complete, Func<TUnitOfWork, Task> onError = null)
+        public UnitOfWorkFilter(Func<ConsumeContext, TUnitOfWork, Task> complete, Func<TUnitOfWork, Task> onError = null)
         {
             this.complete = complete ?? throw new ArgumentNullException(nameof(complete));
             this.onError = onError;
@@ -32,7 +31,7 @@ namespace MassTransitTest.UnitOfWork
             try
             {
                 await next.Send(context);
-                await complete(unitOfWork);
+                await complete(context, unitOfWork);
             }
             catch (Exception)
             {
@@ -40,6 +39,7 @@ namespace MassTransitTest.UnitOfWork
                 {
                     await onError(unitOfWork);
                 }
+
                 throw;
             }
         }
