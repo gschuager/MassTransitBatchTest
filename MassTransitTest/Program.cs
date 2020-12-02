@@ -89,7 +89,7 @@ namespace MassTransitTest
 
             cfg.UseLogging();
             cfg.UseInMemoryOutbox();
-            cfg.UseUnitOfWork<IUnitOfWork>(uow => uow.Complete());
+            cfg.UseUnitOfWork<IUnitOfWork>((x,uow) => uow.Complete(x));
 
             cfg.ConfigureEndpoints(context);
         }
