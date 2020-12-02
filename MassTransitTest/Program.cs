@@ -8,20 +8,16 @@ using Serilog;
 using Serilog.Events;
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Threading;
 using System.Threading.Tasks;
-using MassTransit.ConsumeConfigurators;
 using MassTransit.RabbitMqTransport;
+using MassTransitTest.UnitOfWork;
 
 namespace MassTransitTest
 {
     class Program
     {
-        public const int MessagesCount = 2;
-
-        static async Task Main(string[] args)
+        public static async Task Main(string[] args)
         {
             File.Delete("batch.log");
             Log.Logger = new LoggerConfiguration()
@@ -48,10 +44,10 @@ namespace MassTransitTest
             {
                 await bus.StartAsync();
 
-                var messages = Enumerable.Range(0, MessagesCount).Select(_ => new DoWork());
-                await bus.SendConcurrently(messages, 100);
+                await bus.Send(new DoWork());
+                await bus.Send(new DoWork());
 
-                Console.ReadKey();
+                await Task.Delay(4000);
             }
             finally
             {
@@ -63,9 +59,8 @@ namespace MassTransitTest
         {
             var services = new ServiceCollection();
 
-            services.AddSingleton(typeof(MessageCounter<>));
-
             services.AddLogging(b => b.SetMinimumLevel(LogLevel.Trace).AddSerilog());
+            services.AddScoped<IUnitOfWork, UnitOfWork.UnitOfWork>();
 
             EndpointConvention.Map<DoWork>(new Uri("queue:do-work"));
 
@@ -92,46 +87,11 @@ namespace MassTransitTest
 
             cfg.PrefetchCount = 10;
 
-            cfg.UseMessageRetry(r => { r.Immediate(1); });
             cfg.UseLogging();
-            
+            cfg.UseInMemoryOutbox();
+            cfg.UseUnitOfWork<IUnitOfWork>(uow => uow.Complete());
+
             cfg.ConfigureEndpoints(context);
-        }
-    }
-
-    public class DoWork
-    {
-    }
-
-    public class DoWorkConsumerDefinition : ConsumerDefinition<DoWorkConsumer>
-    {
-        protected override void ConfigureConsumer(IReceiveEndpointConfigurator endpointConfigurator,
-            IConsumerConfigurator<DoWorkConsumer> consumerConfigurator)
-        {
-            ((IRabbitMqReceiveEndpointConfigurator) endpointConfigurator).PrefetchCount = 100;
-            consumerConfigurator.Options<BatchOptions>(b =>
-            {
-                b.MessageLimit = 2;
-                // b.TimeLimit = TimeSpan.FromMilliseconds(100);
-                // b.ConcurrencyLimit = 1;
-            });
-        }
-    }
-
-    public class DoWorkConsumer : IConsumer<Batch<DoWork>>
-    {
-        private readonly ILogger<DoWorkConsumer> logger;
-
-        public DoWorkConsumer(ILogger<DoWorkConsumer> logger)
-        {
-            this.logger = logger;
-        }
-
-        public async Task Consume(ConsumeContext<Batch<DoWork>> context)
-        {
-            logger.LogInformation("Consumed {0} DoWork: {1}", context.Message.Length, string.Join(",", context.Message.Select(x => x.MessageId).ToArray()));
-
-            throw new Exception("error");
         }
     }
 }
