@@ -1,30 +1,25 @@
-﻿using MassTransit;
+﻿using System.Threading.Tasks;
+using MassTransit;
 using Microsoft.Extensions.Logging;
-using System.Threading.Tasks;
-using MassTransitTest.UnitOfWork;
 
-namespace MassTransitTest
+namespace MassTransitTest;
+
+public class DoWork
 {
-    public class DoWork
+}
+
+public class DoWorkConsumer : IConsumer<Batch<DoWork>>
+{
+    private readonly ILogger<DoWorkConsumer> logger;
+
+    public DoWorkConsumer(ILogger<DoWorkConsumer> logger)
     {
+        this.logger = logger;
     }
 
-    public class DoWorkConsumer : IConsumer<Batch<DoWork>>
+    public Task Consume(ConsumeContext<Batch<DoWork>> context)
     {
-        private readonly ILogger<DoWorkConsumer> logger;
-        private readonly IUnitOfWork unitOfWork;
-
-        public DoWorkConsumer(ILogger<DoWorkConsumer> logger, IUnitOfWork unitOfWork)
-        {
-            this.logger = logger;
-            this.unitOfWork = unitOfWork;
-        }
-
-        public async Task Consume(ConsumeContext<Batch<DoWork>> context)
-        {
-            unitOfWork.Add(new DomainEvent());
-            
-            logger.LogDebug("Working");
-        }
+        logger.LogDebug("Working {0}", nameof(DoWorkConsumer));
+        return Task.CompletedTask;
     }
 }
