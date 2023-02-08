@@ -78,7 +78,7 @@ class Program
         });
 
         cfg.UseNewtonsoftJsonSerializer();
-        cfg.UseUnitOfWork<IUnitOfWork>(uow => uow.Complete());
+        // cfg.UseUnitOfWork<IUnitOfWork>(uow => uow.Complete());
 
         cfg.ConfigureEndpoints(context);
     }

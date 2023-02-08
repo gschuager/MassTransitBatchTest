@@ -20,6 +20,7 @@ public class DoWorkConsumer : IConsumer<Batch<DoWork>>
     public Task Consume(ConsumeContext<Batch<DoWork>> context)
     {
         logger.LogDebug("Working {0}", nameof(DoWorkConsumer));
-        return Task.CompletedTask;
+        throw new System.Exception("something went wrong");
+        // return Task.CompletedTask;
     }
 }
